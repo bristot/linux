@@ -88,6 +88,22 @@ static inline void __jump_label_disabling_check(struct jump_entry *entry,
 	}
 }
 
+static void __jump_label_set_jump_code(struct jump_entry *entry,
+				     enum jump_label_type type,
+				     int init,
+				     union jump_code_union *code)
+{
+	if (type == JUMP_LABEL_JMP) {
+		__jump_label_enabling_check(entry, type, init);
+
+		code->jump = 0xe9;
+		code->offset = entry->target - (entry->code + JUMP_LABEL_NOP_SIZE);
+	} else {
+		__jump_label_disabling_check(entry, type, init);
+		memcpy(code, ideal_nops[NOP_ATOMIC5], JUMP_LABEL_NOP_SIZE);
+	}
+}
+
 static void __ref __jump_label_transform(struct jump_entry *entry,
 					 enum jump_label_type type,
 					 void *(*poker)(void *, const void *, size_t),
@@ -98,16 +114,7 @@ static void __ref __jump_label_transform(struct jump_entry *entry,
 	if (early_boot_irqs_disabled)
 		poker = text_poke_early;
 
-	if (type == JUMP_LABEL_JMP) {
-		__jump_label_enabling_check(entry, type, init);
-
-		code.jump = 0xe9;
-		code.offset = entry->target -
-				(entry->code + JUMP_LABEL_NOP_SIZE);
-	} else {
-		__jump_label_disabling_check(entry, type, init);
-		memcpy(&code, ideal_nops[NOP_ATOMIC5], JUMP_LABEL_NOP_SIZE);
-	}
+	__jump_label_set_jump_code(entry, type, init, &code);
 
 	/*
 	 * Make text_poke_bp() a default fallback poker.
