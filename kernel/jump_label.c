@@ -361,22 +361,29 @@ static enum jump_label_type jump_label_type(struct jump_entry *entry)
 	return enabled ^ branch;
 }
 
+bool jump_label_can_update_check(struct jump_entry *entry)
+{
+	/*
+	 * An entry->code of 0 indicates an entry which has been
+	 * disabled because it was in an init text area.
+	 */
+	if (entry->code) {
+		if (kernel_text_address(entry->code))
+			return 1;
+		else
+			WARN_ONCE(1, "can't patch jump_label at %pS",
+				  (void *)(unsigned long)entry->code);
+	}
+	return 0;
+}
+
 static void __jump_label_update(struct static_key *key,
 				struct jump_entry *entry,
 				struct jump_entry *stop)
 {
 	for_each_label_entry(key, entry, stop) {
-		/*
-		 * An entry->code of 0 indicates an entry which has been
-		 * disabled because it was in an init text area.
-		 */
-		if (entry->code) {
-			if (kernel_text_address(entry->code))
-				arch_jump_label_transform(entry, jump_label_type(entry));
-			else
-				WARN_ONCE(1, "can't patch jump_label at %pS",
-					  (void *)(unsigned long)entry->code);
-		}
+		if (jump_label_can_update_check(entry))
+			arch_jump_label_transform(entry, jump_label_type(entry));
 	}
 }
 
