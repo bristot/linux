@@ -37,57 +37,75 @@ static void bug_at(unsigned char *ip, int line)
 	BUG();
 }
 
+static inline void __jump_label_enabling_check(struct jump_entry *entry,
+					 enum jump_label_type type,
+					 int init)
+{
+	const unsigned char default_nop[] = { STATIC_KEY_INIT_NOP };
+	const unsigned char *ideal_nop = ideal_nops[NOP_ATOMIC5];
+
+	if (init) {
+		/*
+		 * Jump label is enabled for the first time.
+		 * So we expect a default_nop...
+		 */
+		if (unlikely(memcmp((void *)entry->code, default_nop, 5)
+			     != 0))
+			bug_at((void *)entry->code, __LINE__);
+	} else {
+		/*
+		 * ...otherwise expect an ideal_nop. Otherwise
+		 * something went horribly wrong.
+		 */
+		if (unlikely(memcmp((void *)entry->code, ideal_nop, 5)
+			     != 0))
+			bug_at((void *)entry->code, __LINE__);
+	}
+}
+
+static inline void __jump_label_disabling_check(struct jump_entry *entry,
+					 enum jump_label_type type,
+					 int init)
+{
+	union jump_code_union code;
+	const unsigned char default_nop[] = { STATIC_KEY_INIT_NOP };
+
+	/*
+	 * We are disabling this jump label. If it is not what
+	 * we think it is, then something must have gone wrong.
+	 * If this is the first initialization call, then we
+	 * are converting the default nop to the ideal nop.
+	 */
+	if (init) {
+		if (unlikely(memcmp((void *)entry->code, default_nop, 5) != 0))
+			bug_at((void *)entry->code, __LINE__);
+	} else {
+		code.jump = 0xe9;
+		code.offset = entry->target -
+			(entry->code + JUMP_LABEL_NOP_SIZE);
+		if (unlikely(memcmp((void *)entry->code, &code, 5) != 0))
+			bug_at((void *)entry->code, __LINE__);
+	}
+}
+
 static void __ref __jump_label_transform(struct jump_entry *entry,
 					 enum jump_label_type type,
 					 void *(*poker)(void *, const void *, size_t),
 					 int init)
 {
 	union jump_code_union code;
-	const unsigned char default_nop[] = { STATIC_KEY_INIT_NOP };
-	const unsigned char *ideal_nop = ideal_nops[NOP_ATOMIC5];
 
 	if (early_boot_irqs_disabled)
 		poker = text_poke_early;
 
 	if (type == JUMP_LABEL_JMP) {
-		if (init) {
-			/*
-			 * Jump label is enabled for the first time.
-			 * So we expect a default_nop...
-			 */
-			if (unlikely(memcmp((void *)entry->code, default_nop, 5)
-				     != 0))
-				bug_at((void *)entry->code, __LINE__);
-		} else {
-			/*
-			 * ...otherwise expect an ideal_nop. Otherwise
-			 * something went horribly wrong.
-			 */
-			if (unlikely(memcmp((void *)entry->code, ideal_nop, 5)
-				     != 0))
-				bug_at((void *)entry->code, __LINE__);
-		}
+		__jump_label_enabling_check(entry, type, init);
 
 		code.jump = 0xe9;
 		code.offset = entry->target -
 				(entry->code + JUMP_LABEL_NOP_SIZE);
 	} else {
-		/*
-		 * We are disabling this jump label. If it is not what
-		 * we think it is, then something must have gone wrong.
-		 * If this is the first initialization call, then we
-		 * are converting the default nop to the ideal nop.
-		 */
-		if (init) {
-			if (unlikely(memcmp((void *)entry->code, default_nop, 5) != 0))
-				bug_at((void *)entry->code, __LINE__);
-		} else {
-			code.jump = 0xe9;
-			code.offset = entry->target -
-				(entry->code + JUMP_LABEL_NOP_SIZE);
-			if (unlikely(memcmp((void *)entry->code, &code, 5) != 0))
-				bug_at((void *)entry->code, __LINE__);
-		}
+		__jump_label_disabling_check(entry, type, init);
 		memcpy(&code, ideal_nops[NOP_ATOMIC5], JUMP_LABEL_NOP_SIZE);
 	}
 
