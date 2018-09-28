@@ -18,6 +18,14 @@ static inline void apply_paravirt(struct paravirt_patch_site *start,
 #define __parainstructions_end	NULL
 #endif
 
+struct text_to_poke {
+	struct list_head list;
+	void *opcode;
+	void *addr;
+	void *handler;
+	size_t len;
+};
+
 extern void *text_poke_early(void *addr, const void *opcode, size_t len);
 
 /*
@@ -37,6 +45,7 @@ extern void *text_poke_early(void *addr, const void *opcode, size_t len);
 extern void *text_poke(void *addr, const void *opcode, size_t len);
 extern int poke_int3_handler(struct pt_regs *regs);
 extern void *text_poke_bp(void *addr, const void *opcode, size_t len, void *handler);
+extern void text_poke_bp_list(struct list_head *entry_list);
 extern int after_bootmem;
 
 #endif /* _ASM_X86_TEXT_PATCHING_H */
