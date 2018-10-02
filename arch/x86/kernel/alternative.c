@@ -734,12 +734,13 @@ static void do_sync_core(void *info)
 }
 
 static bool bp_patching_in_progress;
-static void *bp_int3_handler[1024], *bp_int3_addr[1024];
-int bp_count;
+static void *bp_int3_handler, *bp_int3_addr;
+struct list_head *bp_list;
 
 int poke_int3_handler(struct pt_regs *regs)
 {
-	int i;
+	void *ip;
+	struct text_to_poke *tp;
 	/*
 	 * Having observed our INT3 instruction, we now must observe
 	 * bp_patching_in_progress.
@@ -758,10 +759,25 @@ int poke_int3_handler(struct pt_regs *regs)
 	if (user_mode(regs))
 		return 0;
 
-	for(i = 0; i < bp_count; i++) {
-		if (regs->ip == (unsigned long)bp_int3_addr[i]) {
+	/*
+	 * Single poke
+	 */
+	if (bp_int3_addr) {
+		if (regs->ip == (unsigned long) bp_int3_addr) {
+			regs->ip = (unsigned long) bp_int3_handler;
+			return 1;
+		}
+		return 0;
+	}
+
+	/*
+	 * Batch mode
+	 */
+	ip = (void *) regs->ip - sizeof(unsigned char);
+	list_for_each_entry(tp, bp_list, list) {
+		if (ip == tp->addr) {
 			/* set up the specified breakpoint handler */
-			regs->ip = (unsigned long) bp_int3_handler[i];
+			regs->ip = (unsigned long) tp->handler;
 			return 1;
 		}
 	}
@@ -773,10 +789,6 @@ int poke_int3_handler(struct pt_regs *regs)
 static void text_poke_bp_set_handler(void *addr, void *handler,
 				     unsigned char int3)
 {
-	bp_int3_handler[bp_count] = handler;
-	bp_int3_addr[bp_count] = (u8 *)addr + sizeof(int3);
-	bp_count++;
-	smp_wmb();
 	text_poke(addr, &int3, sizeof(int3));
 }
 
@@ -821,6 +833,9 @@ void *text_poke_bp(void *addr, const void *opcode, size_t len, void *handler)
 
 	lockdep_assert_held(&text_mutex);
 
+        bp_int3_handler = handler;
+        bp_int3_addr = (u8 *)addr + sizeof(int3);
+
 	bp_patching_in_progress = true;
 	/*
 	 * Corresponding read barrier in int3 notifier for making sure the
@@ -850,7 +865,7 @@ void *text_poke_bp(void *addr, const void *opcode, size_t len, void *handler)
 	 * the writing of the new instruction.
 	 */
 	bp_patching_in_progress = false;
-
+	bp_int3_handler = bp_int3_addr = 0;
 	return addr;
 }
 
@@ -859,8 +874,8 @@ void text_poke_bp_list(struct list_head *entry_list)
 	unsigned char int3 = 0xcc;
 	int patched_all_but_first = 0;
 	struct text_to_poke *tp;
-	bp_count = 0;
 
+	bp_list = entry_list;
 	bp_patching_in_progress = true;
 	smp_wmb();
 
@@ -893,5 +908,6 @@ void text_poke_bp_list(struct list_head *entry_list)
 	 * sync_core() implies an smp_mb() and orders this store against
 	 * the writing of the new instruction.
 	 */
+	bp_list = 0;
 	bp_patching_in_progress = false;
 }

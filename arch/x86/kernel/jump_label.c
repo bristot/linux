@@ -170,7 +170,7 @@ void arch_jump_label_transform_queue(struct jump_entry *entry,
 	list_add_tail(&tp->list, &batch_list);
 }
 
-void arch_jump_label_transform_flush(void)
+void arch_jump_label_transform_apply(void)
 {
 	struct text_to_poke *tp, *next;
 

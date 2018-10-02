@@ -377,7 +377,7 @@ bool jump_label_can_update_check(struct jump_entry *entry)
 	return 0;
 }
 
-#ifndef HAS_JUMP_LABEL_BATCH
+#ifndef HAVE_JUMP_LABEL_BATCH
 static void __jump_label_update(struct static_key *key,
 				struct jump_entry *entry,
 				struct jump_entry *stop)
@@ -396,7 +396,7 @@ static void __jump_label_update(struct static_key *key,
 		if (jump_label_can_update_check(entry))
 			arch_jump_label_transform_queue(entry, jump_label_type(entry));
 	}
-	arch_jump_label_transform_flush();
+	arch_jump_label_transform_apply();
 
 }
 #endif
