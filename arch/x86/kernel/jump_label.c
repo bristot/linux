@@ -12,6 +12,8 @@
 #include <linux/list.h>
 #include <linux/jhash.h>
 #include <linux/cpu.h>
+#include <linux/slab.h>
+#include <linux/list.h>
 #include <asm/kprobes.h>
 #include <asm/alternative.h>
 #include <asm/text-patching.h>
@@ -137,6 +139,58 @@ void arch_jump_label_transform(struct jump_entry *entry,
 	mutex_lock(&text_mutex);
 	__jump_label_transform(entry, type, NULL, 0);
 	mutex_unlock(&text_mutex);
+}
+
+LIST_HEAD(batch_list);
+
+void arch_jump_label_transform_queue(struct jump_entry *entry,
+				     enum jump_label_type type)
+{
+	struct text_to_poke *tp;
+
+	/*
+	 * Batch mode disabled at boot time.
+	 */
+	if (early_boot_irqs_disabled)
+		goto fallback;
+
+	/*
+	 * RFC Note: I put __GFP_NOFAIL, but I could also goto fallback;
+	 * thoughts?
+	 */
+	tp = kzalloc(sizeof(struct text_to_poke), GFP_KERNEL | __GFP_NOFAIL);
+	tp->opcode = kzalloc(sizeof(union jump_code_union),
+			     GFP_KERNEL | __GFP_NOFAIL);
+
+	__jump_label_set_jump_code(entry, type, 0, tp->opcode);
+	tp->addr = (void *) entry->code;
+	tp->len = JUMP_LABEL_NOP_SIZE;
+	tp->handler = (void *) entry->code + JUMP_LABEL_NOP_SIZE;
+
+	list_add_tail(&tp->list, &batch_list);
+
+	return;
+
+fallback:
+	arch_jump_label_transform(entry, type);
+}
+
+void arch_jump_label_transform_apply(void)
+{
+	struct text_to_poke *tp, *next;
+
+	if (early_boot_irqs_disabled)
+		return;
+
+	mutex_lock(&text_mutex);
+	text_poke_bp_list(&batch_list);
+	mutex_unlock(&text_mutex);
+
+	list_for_each_entry_safe(tp, next, &batch_list, list) {
+		list_del(&tp->list);
+		kfree(tp->opcode);
+		kfree(tp);
+	}
 }
 
 static enum {

@@ -735,9 +735,12 @@ static void do_sync_core(void *info)
 
 static bool bp_patching_in_progress;
 static void *bp_int3_handler, *bp_int3_addr;
+struct list_head *bp_list;
 
 int poke_int3_handler(struct pt_regs *regs)
 {
+	void *ip;
+	struct text_to_poke *tp;
 	/*
 	 * Having observed our INT3 instruction, we now must observe
 	 * bp_patching_in_progress.
@@ -753,21 +756,38 @@ int poke_int3_handler(struct pt_regs *regs)
 	if (likely(!bp_patching_in_progress))
 		return 0;
 
-	if (user_mode(regs) || regs->ip != (unsigned long)bp_int3_addr)
+	if (user_mode(regs))
 		return 0;
 
-	/* set up the specified breakpoint handler */
-	regs->ip = (unsigned long) bp_int3_handler;
+	/*
+	 * Single poke.
+	 */
+	if (bp_int3_addr) {
+		if (regs->ip == (unsigned long) bp_int3_addr) {
+			regs->ip = (unsigned long) bp_int3_handler;
+			return 1;
+		}
+		return 0;
+	}
 
-	return 1;
+	/*
+	 * Batch mode.
+	 */
+	ip = (void *) regs->ip - sizeof(unsigned char);
+	list_for_each_entry(tp, bp_list, list) {
+		if (ip == tp->addr) {
+			/* set up the specified breakpoint handler */
+			regs->ip = (unsigned long) tp->handler;
+			return 1;
+		}
+	}
 
+	return 0;
 }
 
 static void text_poke_bp_set_handler(void *addr, void *handler,
 				     unsigned char int3)
 {
-	bp_int3_handler = handler;
-	bp_int3_addr = (u8 *)addr + sizeof(int3);
 	text_poke(addr, &int3, sizeof(int3));
 }
 
@@ -812,6 +832,9 @@ void *text_poke_bp(void *addr, const void *opcode, size_t len, void *handler)
 
 	lockdep_assert_held(&text_mutex);
 
+	bp_int3_handler = handler;
+	bp_int3_addr = (u8 *)addr + sizeof(int3);
+
 	bp_patching_in_progress = true;
 	/*
 	 * Corresponding read barrier in int3 notifier for making sure the
@@ -841,7 +864,53 @@ void *text_poke_bp(void *addr, const void *opcode, size_t len, void *handler)
 	 * the writing of the new instruction.
 	 */
 	bp_patching_in_progress = false;
-
+	bp_int3_handler = bp_int3_addr = 0;
 	return addr;
 }
 
+void text_poke_bp_list(struct list_head *entry_list)
+{
+	unsigned char int3 = 0xcc;
+	int patched_all_but_first = 0;
+	struct text_to_poke *tp;
+
+	bp_list = entry_list;
+	bp_patching_in_progress = true;
+	/*
+	 * Corresponding read barrier in int3 notifier for making sure the
+	 * in_progress and handler are correctly ordered wrt. patching.
+	 */
+	smp_wmb();
+
+	list_for_each_entry(tp, entry_list, list)
+		text_poke_bp_set_handler(tp->addr, tp->handler, int3);
+
+	on_each_cpu(do_sync_core, NULL, 1);
+
+	list_for_each_entry(tp, entry_list, list) {
+		if (tp->len - sizeof(int3) > 0) {
+			patch_all_but_first_byte(tp->addr, tp->opcode, tp->len, int3);
+			patched_all_but_first++;
+		}
+	}
+
+	if (patched_all_but_first) {
+		/*
+		 * According to Intel, this core syncing is very likely
+		 * not necessary and we'd be safe even without it. But
+		 * better safe than sorry (plus there's not only Intel).
+		 */
+		on_each_cpu(do_sync_core, NULL, 1);
+	}
+
+	list_for_each_entry(tp, entry_list, list)
+		patch_first_byte(tp->addr, tp->opcode, int3);
+
+	on_each_cpu(do_sync_core, NULL, 1);
+	/*
+	 * sync_core() implies an smp_mb() and orders this store against
+	 * the writing of the new instruction.
+	 */
+	bp_list = 0;
+	bp_patching_in_progress = false;
+}
